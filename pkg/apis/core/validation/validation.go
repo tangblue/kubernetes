@@ -2804,6 +2804,27 @@ func ValidateHostAliases(hostAliases []core.HostAlias, fldPath *field.Path) fiel
 	return allErrs
 }
 
+func ValidateHostAliasesFrom(hostAliasesSource *core.HostAliasesSource, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	numSources := 0
+
+	if hostAliasesSource.ConfigMapKeyRef != nil {
+		numSources++
+		allErrs = append(allErrs, validateConfigMapKeySelector(hostAliasesSource.ConfigMapKeyRef, fldPath.Child("configMapKeyRef"))...)
+	}
+	if hostAliasesSource.SecretKeyRef != nil {
+		numSources++
+		allErrs = append(allErrs, validateSecretKeySelector(hostAliasesSource.SecretKeyRef, fldPath.Child("secretKeyRef"))...)
+	}
+	if numSources == 0 {
+		allErrs = append(allErrs, field.Invalid(fldPath, "", "must specify one of: `configMapKeyRef` or `secretKeyRef`"))
+	} else if numSources > 1 {
+		allErrs = append(allErrs, field.Invalid(fldPath, "", "may not have more than one field specified at a time"))
+	}
+
+	return allErrs
+}
+
 // ValidateTolerations tests if given tolerations have valid data.
 func ValidateTolerations(tolerations []core.Toleration, fldPath *field.Path) field.ErrorList {
 	allErrors := field.ErrorList{}
@@ -2967,6 +2988,12 @@ func ValidatePodSpec(spec *core.PodSpec, fldPath *field.Path) field.ErrorList {
 
 	if len(spec.HostAliases) > 0 {
 		allErrs = append(allErrs, ValidateHostAliases(spec.HostAliases, fldPath.Child("hostAliases"))...)
+	}
+
+	if len(spec.HostAliasesFrom) > 0 {
+		for _, h := range spec.HostAliasesFrom {
+			allErrs = append(allErrs, ValidateHostAliasesFrom(h, fldPath.Child("hostAliasesFrom"))...)
+		}
 	}
 
 	if len(spec.PriorityClassName) > 0 {

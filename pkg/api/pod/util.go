@@ -46,6 +46,11 @@ func VisitPodSecretNames(pod *api.Pod, visitor Visitor) bool {
 			return false
 		}
 	}
+	for _, h := range pod.Spec.HostAliasesFrom {
+		if h.SecretKeyRef != nil && !visitor(h.SecretKeyRef.Name) {
+			return false
+		}
+	}
 	var source *api.VolumeSource
 	for i := range pod.Spec.Volumes {
 		source = &pod.Spec.Volumes[i].VolumeSource
@@ -125,6 +130,11 @@ func VisitPodConfigmapNames(pod *api.Pod, visitor Visitor) bool {
 	}
 	for i := range pod.Spec.Containers {
 		if !visitContainerConfigmapNames(&pod.Spec.Containers[i], visitor) {
+			return false
+		}
+	}
+	for _, h := range pod.Spec.HostAliasesFrom {
+		if h.ConfigMapKeyRef != nil && !visitor(h.ConfigMapKeyRef.Name) {
 			return false
 		}
 	}

@@ -273,7 +273,7 @@ func TestMakeMounts(t *testing.T) {
 				return
 			}
 
-			mounts, _, err := makeMounts(&pod, "/pod", &tc.container, "fakepodname", "", "", tc.podVolumes, fm)
+			mounts, _, err := makeMounts(&pod, "/pod", &tc.container, "fakepodname", "", "", nil, tc.podVolumes, fm)
 
 			// validate only the error if we expect an error
 			if tc.expectErr {
@@ -296,7 +296,7 @@ func TestMakeMounts(t *testing.T) {
 				t.Errorf("Failed to enable feature gate for MountPropagation: %v", err)
 				return
 			}
-			mounts, _, err = makeMounts(&pod, "/pod", &tc.container, "fakepodname", "", "", tc.podVolumes, fm)
+			mounts, _, err = makeMounts(&pod, "/pod", &tc.container, "fakepodname", "", "", nil, tc.podVolumes, fm)
 			if !tc.expectErr {
 				expectedPrivateMounts := []kubecontainer.Mount{}
 				for _, mount := range tc.expectedMounts {
@@ -357,7 +357,7 @@ func TestDisabledSubpath(t *testing.T) {
 	defer utilfeature.DefaultFeatureGate.Set("VolumeSubpath=true")
 
 	for name, test := range cases {
-		_, _, err := makeMounts(&pod, "/pod", &test.container, "fakepodname", "", "", podVolumes, fm)
+		_, _, err := makeMounts(&pod, "/pod", &test.container, "fakepodname", "", "", nil, podVolumes, fm)
 		if err != nil && !test.expectError {
 			t.Errorf("test %v failed: %v", name, err)
 		}
@@ -503,13 +503,11 @@ func TestMakeBlockVolumes(t *testing.T) {
 func TestNodeHostsFileContent(t *testing.T) {
 	testCases := []struct {
 		hostsFileName            string
-		hostAliases              []v1.HostAlias
 		rawHostsFileContent      string
 		expectedHostsFileContent string
 	}{
 		{
 			"hosts_test_file1",
-			[]v1.HostAlias{},
 			`# hosts file for testing.
 127.0.0.1	localhost
 ::1	localhost ip6-localhost ip6-loopback
@@ -532,7 +530,6 @@ fe00::2	ip6-allrouters
 		},
 		{
 			"hosts_test_file2",
-			[]v1.HostAlias{},
 			`# another hosts file for testing.
 127.0.0.1	localhost
 ::1	localhost ip6-localhost ip6-loopback
@@ -551,70 +548,6 @@ fe00::0	ip6-mcastprefix
 fe00::1	ip6-allnodes
 fe00::2	ip6-allrouters
 12.34.56.78	another.domain
-`,
-		},
-		{
-			"hosts_test_file1_with_host_aliases",
-			[]v1.HostAlias{
-				{IP: "123.45.67.89", Hostnames: []string{"foo", "bar", "baz"}},
-			},
-			`# hosts file for testing.
-127.0.0.1	localhost
-::1	localhost ip6-localhost ip6-loopback
-fe00::0	ip6-localnet
-fe00::0	ip6-mcastprefix
-fe00::1	ip6-allnodes
-fe00::2	ip6-allrouters
-123.45.67.89	some.domain
-`,
-			`# Kubernetes-managed hosts file (host network).
-# hosts file for testing.
-127.0.0.1	localhost
-::1	localhost ip6-localhost ip6-loopback
-fe00::0	ip6-localnet
-fe00::0	ip6-mcastprefix
-fe00::1	ip6-allnodes
-fe00::2	ip6-allrouters
-123.45.67.89	some.domain
-
-# Entries added by HostAliases.
-123.45.67.89	foo
-123.45.67.89	bar
-123.45.67.89	baz
-`,
-		},
-		{
-			"hosts_test_file2_with_host_aliases",
-			[]v1.HostAlias{
-				{IP: "123.45.67.89", Hostnames: []string{"foo", "bar", "baz"}},
-				{IP: "456.78.90.123", Hostnames: []string{"park", "doo", "boo"}},
-			},
-			`# another hosts file for testing.
-127.0.0.1	localhost
-::1	localhost ip6-localhost ip6-loopback
-fe00::0	ip6-localnet
-fe00::0	ip6-mcastprefix
-fe00::1	ip6-allnodes
-fe00::2	ip6-allrouters
-12.34.56.78	another.domain
-`,
-			`# Kubernetes-managed hosts file (host network).
-# another hosts file for testing.
-127.0.0.1	localhost
-::1	localhost ip6-localhost ip6-loopback
-fe00::0	ip6-localnet
-fe00::0	ip6-mcastprefix
-fe00::1	ip6-allnodes
-fe00::2	ip6-allrouters
-12.34.56.78	another.domain
-
-# Entries added by HostAliases.
-123.45.67.89	foo
-123.45.67.89	bar
-123.45.67.89	baz
-456.78.90.123	park
-456.78.90.123	doo
-456.78.90.123	boo
 `,
 		},
 	}
@@ -624,7 +557,7 @@ fe00::2	ip6-allrouters
 		require.NoError(t, err, "could not create a temp hosts file")
 		defer os.RemoveAll(tmpdir)
 
-		actualContent, fileReadErr := nodeHostsFileContent(filepath.Join(tmpdir, testCase.hostsFileName), testCase.hostAliases)
+		actualContent, fileReadErr := nodeHostsFileContent(filepath.Join(tmpdir, testCase.hostsFileName))
 		require.NoError(t, fileReadErr, "could not create read hosts file")
 		assert.Equal(t, testCase.expectedHostsFileContent, string(actualContent), "hosts file content not expected")
 	}
@@ -645,14 +578,12 @@ func TestManagedHostsFileContent(t *testing.T) {
 		hostIP          string
 		hostName        string
 		hostDomainName  string
-		hostAliases     []v1.HostAlias
 		expectedContent string
 	}{
 		{
 			"123.45.67.89",
 			"podFoo",
 			"",
-			[]v1.HostAlias{},
 			`# Kubernetes-managed hosts file.
 127.0.0.1	localhost
 ::1	localhost ip6-localhost ip6-loopback
@@ -667,7 +598,6 @@ fe00::2	ip6-allrouters
 			"203.0.113.1",
 			"podFoo",
 			"domainFoo",
-			[]v1.HostAlias{},
 			`# Kubernetes-managed hosts file.
 127.0.0.1	localhost
 ::1	localhost ip6-localhost ip6-loopback
@@ -682,9 +612,6 @@ fe00::2	ip6-allrouters
 			"203.0.113.1",
 			"podFoo",
 			"domainFoo",
-			[]v1.HostAlias{
-				{IP: "123.45.67.89", Hostnames: []string{"foo", "bar", "baz"}},
-			},
 			`# Kubernetes-managed hosts file.
 127.0.0.1	localhost
 ::1	localhost ip6-localhost ip6-loopback
@@ -693,7 +620,44 @@ fe00::0	ip6-mcastprefix
 fe00::1	ip6-allnodes
 fe00::2	ip6-allrouters
 203.0.113.1	podFoo.domainFoo	podFoo
+`,
+		},
+		{
+			"203.0.113.1",
+			"podFoo",
+			"domainFoo",
+			`# Kubernetes-managed hosts file.
+127.0.0.1	localhost
+::1	localhost ip6-localhost ip6-loopback
+fe00::0	ip6-localnet
+fe00::0	ip6-mcastprefix
+fe00::1	ip6-allnodes
+fe00::2	ip6-allrouters
+203.0.113.1	podFoo.domainFoo	podFoo
+`,
+		},
+	}
 
+	for _, testCase := range testCases {
+		actualContent := managedHostsFileContent(testCase.hostIP, testCase.hostName, testCase.hostDomainName)
+		assert.Equal(t, testCase.expectedContent, string(actualContent), "hosts file content not expected")
+	}
+}
+
+func TestHostsEntriesFromHostAliases(t *testing.T) {
+	testCases := []struct {
+		hostAliases     []v1.HostAlias
+		expectedContent string
+	}{
+		{
+			[]v1.HostAlias{},
+			``,
+		},
+		{
+			[]v1.HostAlias{
+				{IP: "123.45.67.89", Hostnames: []string{"foo", "bar", "baz"}},
+			},
+			`
 # Entries added by HostAliases.
 123.45.67.89	foo
 123.45.67.89	bar
@@ -701,22 +665,11 @@ fe00::2	ip6-allrouters
 `,
 		},
 		{
-			"203.0.113.1",
-			"podFoo",
-			"domainFoo",
 			[]v1.HostAlias{
 				{IP: "123.45.67.89", Hostnames: []string{"foo", "bar", "baz"}},
 				{IP: "456.78.90.123", Hostnames: []string{"park", "doo", "boo"}},
 			},
-			`# Kubernetes-managed hosts file.
-127.0.0.1	localhost
-::1	localhost ip6-localhost ip6-loopback
-fe00::0	ip6-localnet
-fe00::0	ip6-mcastprefix
-fe00::1	ip6-allnodes
-fe00::2	ip6-allrouters
-203.0.113.1	podFoo.domainFoo	podFoo
-
+			`
 # Entries added by HostAliases.
 123.45.67.89	foo
 123.45.67.89	bar
@@ -729,8 +682,248 @@ fe00::2	ip6-allrouters
 	}
 
 	for _, testCase := range testCases {
-		actualContent := managedHostsFileContent(testCase.hostIP, testCase.hostName, testCase.hostDomainName, testCase.hostAliases)
+		actualContent := hostsEntriesFromHostAliases(testCase.hostAliases)
 		assert.Equal(t, testCase.expectedContent, string(actualContent), "hosts file content not expected")
+	}
+}
+
+func TestManagedHostsFromFileContent(t *testing.T) {
+	trueVal := true
+
+	testCases := []struct {
+		name            string                  // the name of the test case
+		ns              string                  // the namespace to generate environment for
+		HostAliasesFrom []*v1.HostAliasesSource // the HostAliasesSource to use
+		configMap       *v1.ConfigMap           // an optional ConfigMap to pull from
+		secret          *v1.Secret              // an optional Secret to pull from
+		expectedContent string
+		expectedError   bool   // does the test fail
+		expectedEvent   string // does the test emit an event
+	}{
+		{
+			name: "configmapkeyref_missing_optional",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					ConfigMapKeyRef: &v1.ConfigMapKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "missing-configmap"},
+						Key:                  "key",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			expectedContent: "",
+		},
+		{
+			name: "configmapkeyref_missing_key_optional",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					ConfigMapKeyRef: &v1.ConfigMapKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "test-configmap"},
+						Key:                  "key",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			configMap: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test1",
+					Name:      "test-configmap",
+				},
+				Data: map[string]string{
+					"a": "b",
+				},
+			},
+			expectedContent: "",
+		},
+		{
+			name: "configmapkeyref_key_optional",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					ConfigMapKeyRef: &v1.ConfigMapKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "test-configmap"},
+						Key:                  "hosts",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			configMap: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test-configmap",
+				},
+				Data: map[string]string{
+					"hosts": "127.0.0.1	foo.local",
+				},
+			},
+			expectedContent: `
+# Entries added from configmap test-configmap.hosts
+127.0.0.1	foo.local`,
+		},
+		{
+			name: "secretkeyref_missing_optional",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					SecretKeyRef: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "missing-secret"},
+						Key:                  "key",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			expectedContent: "",
+		},
+		{
+			name: "secretkeyref_missing_key_optional",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					SecretKeyRef: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "test-secret"},
+						Key:                  "key",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			secret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test1",
+					Name:      "test-secret",
+				},
+				Data: map[string][]byte{
+					"a": []byte("b"),
+				},
+			},
+			expectedContent: "",
+		},
+		{
+			name: "secretkeyref_key_optional",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					SecretKeyRef: &v1.SecretKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "test-secret"},
+						Key:                  "hosts",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			secret: &v1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test-secret",
+				},
+				Data: map[string][]byte{
+					"hosts": []byte("127.0.0.1	foo.local"),
+				},
+			},
+			expectedContent: `
+# Entries added from secret test-secret.hosts
+127.0.0.1	foo.local`,
+		},
+		{
+			name: "Bad IP",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					ConfigMapKeyRef: &v1.ConfigMapKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "test-configmap"},
+						Key:                  "hosts",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			configMap: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test-configmap",
+				},
+				Data: map[string]string{
+					"hosts": "327.0.0.1	foo.local",
+				},
+			},
+			expectedError:   true,
+			expectedContent: "Error in configmap test-configmap.hosts: Invalid IP address: 327.0.0.1",
+		},
+		{
+			name: "Bad hostname",
+			ns:   "test",
+			HostAliasesFrom: []*v1.HostAliasesSource{
+				{
+					ConfigMapKeyRef: &v1.ConfigMapKeySelector{
+						LocalObjectReference: v1.LocalObjectReference{Name: "test-configmap"},
+						Key:                  "hosts",
+						Optional:             &trueVal,
+					},
+				},
+			},
+			configMap: &v1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test-configmap",
+				},
+				Data: map[string]string{
+					"hosts": "127.0.0.1	.local",
+				},
+			},
+			expectedError:   true,
+			expectedContent: `Error in configmap test-configmap.hosts: a DNS-1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character (e.g. 'example.com', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*')`,
+		},
+	}
+
+	for _, tc := range testCases {
+		fakeRecorder := record.NewFakeRecorder(1)
+		testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+		testKubelet.kubelet.recorder = fakeRecorder
+		defer testKubelet.Cleanup()
+		kl := testKubelet.kubelet
+
+		testKubelet.fakeKubeClient.AddReactor("get", "configmaps", func(action core.Action) (bool, runtime.Object, error) {
+			var err error
+			if tc.configMap == nil {
+				err = apierrors.NewNotFound(action.GetResource().GroupResource(), "configmap-name")
+			}
+			return true, tc.configMap, err
+		})
+		testKubelet.fakeKubeClient.AddReactor("get", "secrets", func(action core.Action) (bool, runtime.Object, error) {
+			var err error
+			if tc.secret == nil {
+				err = apierrors.NewNotFound(action.GetResource().GroupResource(), "secret-name")
+			}
+			return true, tc.secret, err
+		})
+
+		testPod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: tc.ns,
+				Name:      "dapi-test-pod-name",
+			},
+			Spec: v1.PodSpec{
+				ServiceAccountName: "special",
+				NodeName:           "node-name",
+				HostAliasesFrom:    tc.HostAliasesFrom,
+			},
+		}
+
+		result, err := kl.getHostsEntriesFromHostAliasesFrom(testPod)
+		select {
+		case e := <-fakeRecorder.Events:
+			assert.Equal(t, tc.expectedEvent, e)
+		default:
+			assert.Equal(t, "", tc.expectedEvent)
+		}
+		if tc.expectedError {
+			assert.Error(t, err, tc.expectedContent)
+
+			assert.Equal(t, tc.expectedContent, err.Error(), "[%s] hosts entries from source", tc.name)
+		} else {
+			assert.NoError(t, err, "[%s]", tc.name)
+
+			assert.Equal(t, tc.expectedContent, string(result), "[%s] hosts entries from source", tc.name)
+		}
 	}
 }
 

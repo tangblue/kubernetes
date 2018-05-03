@@ -2454,6 +2454,10 @@ type PodSpec struct {
 	// file if specified. This is only valid for non-hostNetwork pods.
 	// +optional
 	HostAliases []HostAlias
+	// HostAliasesFrom is an optional list of hosts and IPs sources that will be injected into the pod's hosts
+	// file if specified. This is only valid for non-hostNetwork pods.
+	// +optional
+	HostAliasesFrom []*HostAliasesSource
 	// If specified, indicates the pod's priority. "system-node-critical" and
 	// "system-cluster-critical" are two special keywords which indicate the
 	// highest priorities with the former being the highest priority. Any other
@@ -2481,6 +2485,17 @@ type PodSpec struct {
 type HostAlias struct {
 	IP        string
 	Hostnames []string
+}
+
+// HostAliasesSource represents a source for the value of an HostAliasesFrom.
+// Only one of its fields may be set.
+type HostAliasesSource struct {
+	// Selects a key of a ConfigMap.
+	// +optional
+	ConfigMapKeyRef *ConfigMapKeySelector
+	// Selects a key of a secret in the pod's namespace.
+	// +optional
+	SecretKeyRef *SecretKeySelector
 }
 
 // Sysctl defines a kernel parameter to be set

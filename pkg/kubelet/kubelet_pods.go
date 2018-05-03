@@ -129,7 +129,7 @@ func (kl *Kubelet) makeBlockVolumes(pod *v1.Pod, container *v1.Container, podVol
 }
 
 // makeMounts determines the mount points for the given container.
-func makeMounts(pod *v1.Pod, podDir string, container *v1.Container, hostName, hostDomain, podIP string, podVolumes kubecontainer.VolumeMap, mounter mountutil.Interface) ([]kubecontainer.Mount, func(), error) {
+func makeMounts(pod *v1.Pod, podDir string, container *v1.Container, hostName, hostDomain string, podIP string, hostAliasesFrom []byte, podVolumes kubecontainer.VolumeMap, mounter mountutil.Interface) ([]kubecontainer.Mount, func(), error) {
 	// Kubernetes only mounts on /etc/hosts if:
 	// - container is not an infrastructure (pause) container
 	// - container is not already mounting on /etc/hosts
@@ -245,7 +245,7 @@ func makeMounts(pod *v1.Pod, podDir string, container *v1.Container, hostName, h
 	}
 	if mountEtcHostsFile {
 		hostAliases := pod.Spec.HostAliases
-		hostsMount, err := makeHostsMount(podDir, podIP, hostName, hostDomain, hostAliases, pod.Spec.HostNetwork)
+		hostsMount, err := makeHostsMount(podDir, podIP, hostName, hostDomain, hostAliases, hostAliasesFrom, pod.Spec.HostNetwork)
 		if err != nil {
 			return nil, cleanupAction, err
 		}
@@ -284,9 +284,9 @@ func translateMountPropagation(mountMode *v1.MountPropagationMode) (runtimeapi.M
 
 // makeHostsMount makes the mountpoint for the hosts file that the containers
 // in a pod are injected with.
-func makeHostsMount(podDir, podIP, hostName, hostDomainName string, hostAliases []v1.HostAlias, useHostNetwork bool) (*kubecontainer.Mount, error) {
+func makeHostsMount(podDir, podIP, hostName, hostDomainName string, hostAliases []v1.HostAlias, hostAliasesFrom []byte, useHostNetwork bool) (*kubecontainer.Mount, error) {
 	hostsFilePath := path.Join(podDir, "etc-hosts")
-	if err := ensureHostsFile(hostsFilePath, podIP, hostName, hostDomainName, hostAliases, useHostNetwork); err != nil {
+	if err := ensureHostsFile(hostsFilePath, podIP, hostName, hostDomainName, hostAliases, hostAliasesFrom, useHostNetwork); err != nil {
 		return nil, err
 	}
 	return &kubecontainer.Mount{
@@ -300,7 +300,7 @@ func makeHostsMount(podDir, podIP, hostName, hostDomainName string, hostAliases 
 
 // ensureHostsFile ensures that the given host file has an up-to-date ip, host
 // name, and domain name.
-func ensureHostsFile(fileName, hostIP, hostName, hostDomainName string, hostAliases []v1.HostAlias, useHostNetwork bool) error {
+func ensureHostsFile(fileName, hostIP, hostName, hostDomainName string, hostAliases []v1.HostAlias, hostAliasesFrom []byte, useHostNetwork bool) error {
 	var hostsFileContent []byte
 	var err error
 
@@ -308,20 +308,25 @@ func ensureHostsFile(fileName, hostIP, hostName, hostDomainName string, hostAlia
 		// if Pod is using host network, read hosts file from the node's filesystem.
 		// `etcHostsPath` references the location of the hosts file on the node.
 		// `/etc/hosts` for *nix systems.
-		hostsFileContent, err = nodeHostsFileContent(etcHostsPath, hostAliases)
+		hostsFileContent, err = nodeHostsFileContent(etcHostsPath)
 		if err != nil {
 			return err
 		}
 	} else {
 		// if Pod is not using host network, create a managed hosts file with Pod IP and other information.
-		hostsFileContent = managedHostsFileContent(hostIP, hostName, hostDomainName, hostAliases)
+		hostsFileContent = managedHostsFileContent(hostIP, hostName, hostDomainName)
 	}
 
-	return ioutil.WriteFile(fileName, hostsFileContent, 0644)
+	var buffer bytes.Buffer
+	buffer.Write(hostsFileContent)
+	buffer.Write(hostsEntriesFromHostAliases(hostAliases))
+	buffer.Write(hostAliasesFrom)
+
+	return ioutil.WriteFile(fileName, buffer.Bytes(), 0644)
 }
 
 // nodeHostsFileContent reads the content of node's hosts file.
-func nodeHostsFileContent(hostsFilePath string, hostAliases []v1.HostAlias) ([]byte, error) {
+func nodeHostsFileContent(hostsFilePath string) ([]byte, error) {
 	hostsFileContent, err := ioutil.ReadFile(hostsFilePath)
 	if err != nil {
 		return nil, err
@@ -329,13 +334,12 @@ func nodeHostsFileContent(hostsFilePath string, hostAliases []v1.HostAlias) ([]b
 	var buffer bytes.Buffer
 	buffer.WriteString(managedHostsHeaderWithHostNetwork)
 	buffer.Write(hostsFileContent)
-	buffer.Write(hostsEntriesFromHostAliases(hostAliases))
 	return buffer.Bytes(), nil
 }
 
 // managedHostsFileContent generates the content of the managed etc hosts based on Pod IP and other
 // information.
-func managedHostsFileContent(hostIP, hostName, hostDomainName string, hostAliases []v1.HostAlias) []byte {
+func managedHostsFileContent(hostIP, hostName, hostDomainName string) []byte {
 	var buffer bytes.Buffer
 	buffer.WriteString(managedHostsHeader)
 	buffer.WriteString("127.0.0.1\tlocalhost\n")                      // ipv4 localhost
@@ -349,7 +353,6 @@ func managedHostsFileContent(hostIP, hostName, hostDomainName string, hostAliase
 	} else {
 		buffer.WriteString(fmt.Sprintf("%s\t%s\n", hostIP, hostName))
 	}
-	buffer.Write(hostsEntriesFromHostAliases(hostAliases))
 	return buffer.Bytes()
 }
 
@@ -368,6 +371,114 @@ func hostsEntriesFromHostAliases(hostAliases []v1.HostAlias) []byte {
 		}
 	}
 	return buffer.Bytes()
+}
+
+func (kl *Kubelet) getConfigMapKeyValue(namespace string, cm *v1.ConfigMapKeySelector) ([]byte, error) {
+	if kl.kubeClient == nil {
+		return nil, fmt.Errorf("Couldn't get configMap %v/%v, no kubeClient defined", namespace, cm.Name)
+	}
+
+	optional := cm.Optional != nil && *cm.Optional
+	configMap, err := kl.configMapManager.GetConfigMap(namespace, cm.Name)
+	if err != nil {
+		if errors.IsNotFound(err) && optional {
+			err = nil
+		}
+		return nil, err
+	}
+
+	runtimeValString, ok := configMap.Data[cm.Key]
+	if !ok && !optional {
+		err = fmt.Errorf("Couldn't find key %v in ConfigMap %v/%v", cm.Key, namespace, cm.Name)
+	}
+
+	return []byte(runtimeValString), err
+}
+
+func (kl *Kubelet) getSecretKeyValue(namespace string, s *v1.SecretKeySelector) ([]byte, error) {
+	if kl.kubeClient == nil {
+		return nil, fmt.Errorf("Couldn't get secret %v/%v, no kubeClient defined", namespace, s.Name)
+	}
+
+	optional := s.Optional != nil && *s.Optional
+	secret, err := kl.secretManager.GetSecret(namespace, s.Name)
+	if err != nil {
+		if errors.IsNotFound(err) && optional {
+			err = nil
+		}
+		return nil, err
+	}
+
+	runtimeValBytes, ok := secret.Data[s.Key]
+	if !ok && !optional {
+		err = fmt.Errorf("Couldn't find key %v in Secret %v/%v", s.Key, namespace, s.Name)
+	}
+
+	return runtimeValBytes, err
+}
+
+func (kl *Kubelet) getHostsEntriesFromHostAliasesFrom(pod *v1.Pod) ([]byte, error) {
+	var result bytes.Buffer
+	var namespace = pod.Namespace
+	var err error
+
+	for _, h := range pod.Spec.HostAliasesFrom {
+		var runtimeValBytes []byte
+		var store, name, key string
+
+		switch {
+		case h.ConfigMapKeyRef != nil:
+			cm := h.ConfigMapKeyRef
+			store, name, key = "configmap", cm.Name, cm.Key
+			runtimeValBytes, err = kl.getConfigMapKeyValue(namespace, cm)
+		case h.SecretKeyRef != nil:
+			s := h.SecretKeyRef
+			store, name, key = "secret", s.Name, s.Key
+			runtimeValBytes, err = kl.getSecretKeyValue(namespace, s)
+		}
+		if err != nil {
+			break
+		}
+		err = validateHostsFileContents(runtimeValBytes)
+		if err != nil {
+			err = fmt.Errorf("Error in %v %v.%v: %v", store, name, key, err.Error())
+			break
+		}
+
+		if len(runtimeValBytes) > 0 {
+			result.WriteString(fmt.Sprintf("\n# Entries added from %v %v.%v\n", store, name, key))
+			result.Write(runtimeValBytes)
+		}
+	}
+
+	return result.Bytes(), err
+}
+
+func validateHostsFileContents(hostsFileContent []byte) error {
+	for _, line := range strings.Split(string(hostsFileContent), "\n") {
+		l := strings.Trim(line, " \t")
+		if len(l) == 0 || l[0] == ';' || l[0] == '#' {
+			continue
+		}
+
+		pieces := strings.Fields(l)
+		if len(pieces) < 2 {
+			return fmt.Errorf("Invalid line: %s", line)
+		}
+
+		errs := utilvalidation.IsValidIP(pieces[0])
+		if len(errs) > 0 {
+			return fmt.Errorf("Invalid IP address: %s", pieces[0])
+		}
+		for _, hostname := range pieces[1:] {
+			errs := utilvalidation.IsDNS1123Subdomain(hostname)
+			if len(errs) > 0 {
+				return fmt.Errorf(strings.Join(errs, ", "))
+			}
+		}
+	}
+
+	return nil
 }
 
 // truncatePodHostnameIfNeeded truncates the pod hostname if it's longer than 63 chars.
@@ -453,7 +564,11 @@ func (kl *Kubelet) GenerateRunContainerOptions(pod *v1.Pod, container *v1.Contai
 		opts.Devices = append(opts.Devices, blkVolumes...)
 	}
 
-	mounts, cleanupAction, err := makeMounts(pod, kl.getPodDir(pod.UID), container, hostname, hostDomainName, podIP, volumes, kl.mounter)
+	hostAliasesFrom, err := kl.getHostsEntriesFromHostAliasesFrom(pod)
+	if err != nil {
+		return nil, nil, err
+	}
+	mounts, cleanupAction, err := makeMounts(pod, kl.getPodDir(pod.UID), container, hostname, hostDomainName, podIP, hostAliasesFrom, volumes, kl.mounter)
 	if err != nil {
 		return nil, cleanupAction, err
 	}
